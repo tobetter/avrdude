@@ -1271,8 +1271,8 @@ programmer
   id = "linuxspi";
   desc = "Use Linux SPI device in /dev/spidev*";
   type = "linuxspi";
-  reset = 25;
-  baudrate=400000;
+  reset = 63;
+  baudrate = 4000000;
 ;
 
 # some ultra cheap programmers use bitbanging on the 

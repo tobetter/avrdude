@@ -21,6 +21,7 @@
  * Support for inversion of reset pin, Tim Chilton 02/05/2014
  */
  
+#include <gpiod.h>
 #include "linuxspi.h"
 
 #include "ac_cfg.h"
@@ -142,56 +143,41 @@ static int linuxspi_spi_duplex(PROGRAMMER* pgm, unsigned char* tx, unsigned char
  */
 static int linuxspi_gpio_op_wr(PROGRAMMER* pgm, LINUXSPI_GPIO_OP op, int gpio, char* val)
 {
-    char* fn = malloc(PATH_MAX); //filename
-    gpio &= ~PIN_INVERSE; // Remove the inversion flag
+	char *chipname = "gpiochip0";
+	struct gpiod_chip *chip;
+	struct gpiod_line *line;
+	int ret;
 
-    switch(op)
-    {
-        case LINUXSPI_GPIO_DIRECTION:
-            sprintf(fn, "/sys/class/gpio/gpio%d/direction", gpio);
-            break;
-        case LINUXSPI_GPIO_EXPORT:
-            sprintf(fn, "/sys/class/gpio/export");
-            break;
-        case LINUXSPI_GPIO_UNEXPORT:
-            sprintf(fn, "/sys/class/gpio/unexport");
-            break;
-        case LINUXSPI_GPIO_VALUE:
-            sprintf(fn, "/sys/class/gpio/gpio%d/value", gpio);
-            break;
-        default:
-            fprintf(stderr, "%s: linuxspi_gpio_op_wr(): Unknown op %d", progname, op);
-            return -1;
-    }
-    
-    FILE* f = fopen(fn, "w");
-    
-    int fopen_retries = 0;
-    while (!f && (fopen_retries < 100))
-    {
-        usleep(20000);
-        f = fopen(fn, "w");
-        fopen_retries++;
-    }
+	if (op != LINUXSPI_GPIO_VALUE)
+		return 0;
 
-    if (!f)
-    {
-        fprintf(stderr, "%s: linuxspi_gpio_op_wr(): Unable to open file %s", progname, fn);
-        free(fn); //we no longer need the path
-        return -1;
-    }
-    
-    if (fprintf(f, val) < 0)
-    {
-        fprintf(stderr, "%s: linuxspi_gpio_op_wr(): Unable to write file %s with %s", progname, fn, val);
-        free(fn); //we no longer need the path
-        return -1;
-    }
-    
-    fclose(f);
-    free(fn); //we no longer need the path
-    
-    return 0;
+	chip = gpiod_chip_open_by_name(chipname);
+	if (!chip) {
+		perror("Open chip failen");
+		return 0;
+	}
+
+	line = gpiod_chip_get_line(chip, gpio);
+	if (!line) {
+		perror("Get line failen");
+		goto close_chip;
+	}
+
+	ret = gpiod_line_request_output(line, "Consumer", 0);
+	if (ret < 0) {
+		perror("Request line as output failen");
+		goto release_line;
+	}
+
+	printf("tobetter -- %s,%d -- %d\n", __func__, __LINE__, strcmp(val, "high") == 0);
+	gpiod_line_set_value(line, strcmp(val, "high") == 0);
+
+release_line:
+	gpiod_line_release(line);
+close_chip:
+	gpiod_chip_close(chip);
+
+	return 0;
 }
 
 static void linuxspi_setup(PROGRAMMER* pgm)
@@ -211,8 +197,6 @@ static void linuxspi_teardown(PROGRAMMER* pgm)
 
 static int linuxspi_open(PROGRAMMER* pgm, char* port)
 {   
-    char* buf;
-    
     if (port == 0 || strcmp(port, "unknown") == 0) //unknown port
     {
         fprintf(stderr, "%s: error: No port specified. Port should point to an SPI interface.\n", progname);
@@ -225,19 +209,9 @@ static int linuxspi_open(PROGRAMMER* pgm, char* port)
         exit(1);
     }
 
-    //export reset pin
-    buf = malloc(32);
-    sprintf(buf, "%d", pgm->pinno[PIN_AVR_RESET] &~PIN_INVERSE);
-    if (linuxspi_gpio_op_wr(pgm, LINUXSPI_GPIO_EXPORT, pgm->pinno[PIN_AVR_RESET], buf) < 0)
-    {
-        free(buf);
-        return -1;
-    }
-    free(buf);
-    
     //set reset to output active and write initial value at same time
     //this prevents glitches https://www.kernel.org/doc/Documentation/gpio/sysfs.txt
-    if (linuxspi_gpio_op_wr(pgm, LINUXSPI_GPIO_DIRECTION, pgm->pinno[PIN_AVR_RESET], pgm->pinno[PIN_AVR_RESET]&PIN_INVERSE ? "high" : "low") < 0)
+    if (linuxspi_gpio_op_wr(pgm, LINUXSPI_GPIO_VALUE, pgm->pinno[PIN_AVR_RESET], pgm->pinno[PIN_AVR_RESET]&PIN_INVERSE ? "high" : "low") < 0)
     {
         return -1;
     }
@@ -251,9 +225,6 @@ static int linuxspi_open(PROGRAMMER* pgm, char* port)
 static void linuxspi_close(PROGRAMMER* pgm)
 {
     char* buf;
-    
-    //set reset to input
-    linuxspi_gpio_op_wr(pgm, LINUXSPI_GPIO_DIRECTION, pgm->pinno[PIN_AVR_RESET], "in");
     
     //unexport reset
     buf = malloc(32);
